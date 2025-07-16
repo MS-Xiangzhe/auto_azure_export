@@ -312,58 +312,22 @@ class GraphExplorerMCP:
             self.context = self.browser.contexts[0]
             self.page = await self.context.new_page()
 
-            # Navigate to Graph Explorer
-            await self.page.goto(GRAPH_EXPLORER_URL, wait_until="networkidle")
-
-            # Wait for page to load
-            await asyncio.sleep(2)
-
-            # Minimize sidebar to have more space for the main content
-            try:
-                minimize_sidebar_selectors = [
-                    'button[aria-label="Minimize sidebar"]',
-                    'button[aria-label="收起侧边栏"]',
-                    # Fallback: look for minimize button based on class pattern
-                    'button.fui-Button:has(svg path[d*="M10.82 10.5h3.68"])',
-                ]
-
-                minimize_button = None
-                for selector in minimize_sidebar_selectors:
-                    try:
-                        minimize_button = await self.page.wait_for_selector(
-                            selector, timeout=3000, state="visible"
-                        )
-                        if minimize_button:
-                            logger.info(
-                                f"✅ Found minimize sidebar button with selector: {selector}"
-                            )
-                            break
-                    except:
-                        continue
-
-                if minimize_button:
-                    await minimize_button.click()
-                    await asyncio.sleep(0.5)
-                    logger.info("✅ Successfully minimized sidebar")
-                else:
-                    logger.warning(
-                        "⚠️ Minimize sidebar button not found, continuing anyway"
-                    )
-
-            except Exception as sidebar_error:
-                logger.warning(f"⚠️ Could not minimize sidebar: {sidebar_error}")
-
-            # Bring page to front for human interaction
-            await self.page.bring_to_front()
-            logger.info("✅ Navigated to Graph Explorer and brought to front")
+            logger.info("✅ Browser instance created and ready")
 
     async def _take_screenshot_async(
         self, full_page: bool, element_selector: Optional[str], save_path: Optional[str]
     ) -> Image:
-        """Async screenshot implementation"""
+        """Async screenshot implementation with auto-scroll to top"""
         await self.ensure_browser()
 
         try:
+            # Scroll to top of the page before taking screenshot for consistency
+            logger.info("📜 Scrolling to top of the page...")
+            await self.page.evaluate("window.scrollTo(0, 0)")
+
+            # Wait a moment for the scroll to complete and content to settle
+            await asyncio.sleep(0.5)
+
             screenshot_options = {"full_page": full_page, "type": "png"}
 
             if element_selector:
@@ -373,10 +337,17 @@ class GraphExplorerMCP:
                 )
                 if not element:
                     raise Exception(f"Element not found: {element_selector}")
+
+                # For element screenshots, scroll the element into view
+                await element.scroll_into_view_if_needed()
+                await asyncio.sleep(0.3)
+
                 screenshot_data = await element.screenshot(**screenshot_options)
+                logger.info(f"✅ Screenshot taken of element: {element_selector}")
             else:
                 # Capture full page or viewport
                 screenshot_data = await self.page.screenshot(**screenshot_options)
+                logger.info("✅ Screenshot taken of full page/viewport")
 
             # Save to file if path is provided
             if save_path:
@@ -407,41 +378,30 @@ class GraphExplorerMCP:
             logger.info("🔄 Navigating to Graph Explorer...")
 
             # Navigate to Graph Explorer and wait for page to load
-            await self.page.goto(GRAPH_EXPLORER_URL, wait_until="networkidle")
+            await self.page.goto(GRAPH_EXPLORER_URL, wait_until="domcontentloaded")
 
             # Wait a bit more for dynamic content to load
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
             # Bring page to front for human interaction
             await self.page.bring_to_front()
 
             # Minimize sidebar to have more space for the main content
             try:
-                minimize_sidebar_selectors = [
-                    'button[aria-label="Minimize sidebar"]',
-                    'button[aria-label="收起侧边栏"]',
-                    # Fallback: look for minimize button based on class pattern
-                    'button.fui-Button:has(svg path[d*="M10.82 10.5h3.68"])',
-                ]
+                # Use the most precise selector to target the clickable span element
+                minimize_button_selector = (
+                    'button[aria-label="Minimize sidebar"] span.fui-Button__icon'
+                )
 
-                minimize_button = None
-                for selector in minimize_sidebar_selectors:
-                    try:
-                        minimize_button = await self.page.wait_for_selector(
-                            selector, timeout=3000, state="visible"
-                        )
-                        if minimize_button:
-                            logger.info(
-                                f"✅ Found minimize sidebar button with selector: {selector}"
-                            )
-                            break
-                    except:
-                        continue
+                minimize_button = await self.page.wait_for_selector(
+                    minimize_button_selector, timeout=3000, state="visible"
+                )
 
                 if minimize_button:
-                    await minimize_button.click()
+                    logger.info("✅ Found minimize sidebar button")
+                    await minimize_button.click(force=True)
                     await asyncio.sleep(0.5)
-                    logger.info("✅ Successfully minimized sidebar")
+                    logger.info("✅ Sidebar minimize action completed")
                 else:
                     logger.warning(
                         "⚠️ Minimize sidebar button not found, continuing anyway"
@@ -537,15 +497,21 @@ class GraphExplorerMCP:
                     }
                 }
                 """,
-                api_url
+                api_url,
             )
 
-            if success and success.get('success'):
-                final_value = success.get('value', api_url)
-                logger.info(f"✅ Successfully set API URL via JavaScript injection: {final_value}")
+            if success and success.get("success"):
+                final_value = success.get("value", api_url)
+                logger.info(
+                    f"✅ Successfully set API URL via JavaScript injection: {final_value}"
+                )
                 return f"Successfully set API URL to: {final_value}"
             else:
-                error_msg = success.get('error', 'Unknown error') if success else 'JavaScript evaluation failed'
+                error_msg = (
+                    success.get("error", "Unknown error")
+                    if success
+                    else "JavaScript evaluation failed"
+                )
                 logger.error(f"❌ Failed to set API URL: {error_msg}")
                 raise Exception(f"Failed to set API URL: {error_msg}")
 
