@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import FastMCP
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,7 @@ class ScreenshotOptions(BaseModel):
         default=None,
         description="Absolute file path to save the screenshot (e.g., 'C:\\screenshots\\page.png', '/home/user/screenshots/page.png')",
     )
+
 
 
 class ApiRequestConfig(BaseModel):
@@ -109,7 +110,7 @@ class GraphExplorerMCP:
             full_page: bool = False,
             element_selector: Optional[str] = None,
             save_path: Optional[str] = None,
-        ) -> Image:
+        ) -> str:
             """Take screenshot of Microsoft Graph Explorer current page.
 
             Args:
@@ -118,14 +119,13 @@ class GraphExplorerMCP:
                 save_path: Optional absolute file path to save the screenshot
 
             Returns:
-                Image: Screenshot image data in PNG format
+                str: Success message with screenshot information
 
             Examples:
-                - Basic viewport screenshot: graph_explorer_screenshot()
+                - Basic screenshot: graph_explorer_screenshot()
                 - Full page screenshot: graph_explorer_screenshot(full_page=True)
                 - Element screenshot: graph_explorer_screenshot(element_selector="#response-area")
-                - Save to absolute path (Windows): graph_explorer_screenshot(save_path="C:\\screenshots\\graph.png")
-                - Save to absolute path (Linux): graph_explorer_screenshot(save_path="/home/user/screenshots/graph.png")
+                - Save to file: graph_explorer_screenshot(save_path="C:\\screenshots\\graph.png")
 
             Note: save_path must be an absolute path, not relative.
             """
@@ -145,7 +145,9 @@ class GraphExplorerMCP:
                     )
 
             return await self._take_screenshot_async(
-                options.full_page, options.element_selector, options.save_path
+                options.full_page,
+                options.element_selector,
+                options.save_path,
             )
 
         @self.mcp.tool()
@@ -281,6 +283,49 @@ class GraphExplorerMCP:
             return await self._get_response_body_async()
 
         @self.mcp.tool()
+        async def graph_explorer_get_response_status() -> str:
+            """Get the response status information from Graph Explorer.
+
+            Returns:
+                str: Response status information including HTTP status code, message, and timing
+
+            This tool:
+                1. Looks for the status message bar in the response area
+                2. Extracts the HTTP status code, status message, and response time
+                3. Returns the complete status information
+
+            Use this after running a query to check the API response status.
+            The response format is typically: "STATUS_MESSAGE - STATUS_CODE - RESPONSE_TIME"
+            Example: "OK - 200 - 723 ms"
+            """
+            return await self._get_response_status_async()
+
+        @self.mcp.tool()
+        async def graph_explorer_view_image(image_path: str) -> str:
+            """View an image from the specified file path.
+
+            Args:
+                image_path: Absolute path to the image file to view
+
+            Returns:
+                str: Success message with image information
+
+            Supported formats:
+                - PNG (.png)
+                - JPEG (.jpg, .jpeg)
+                - GIF (.gif)
+                - BMP (.bmp)
+                - WEBP (.webp)
+
+            Examples:
+                - View screenshot: graph_explorer_view_image("C:\\screenshots\\graph.png")
+                - View saved image: graph_explorer_view_image("/home/user/images/photo.jpg")
+
+            Note: image_path must be an absolute path to an existing image file.
+            """
+            return await self._view_image_async(image_path)
+
+        @self.mcp.tool()
         async def graph_explorer_run_query() -> str:
             """Execute the configured API query in Graph Explorer.
 
@@ -315,8 +360,11 @@ class GraphExplorerMCP:
             logger.info("✅ Browser instance created and ready")
 
     async def _take_screenshot_async(
-        self, full_page: bool, element_selector: Optional[str], save_path: Optional[str]
-    ) -> Image:
+        self,
+        full_page: bool,
+        element_selector: Optional[str],
+        save_path: Optional[str],
+    ) -> str:
         """Async screenshot implementation with auto-scroll to top"""
         await self.ensure_browser()
 
@@ -327,8 +375,6 @@ class GraphExplorerMCP:
 
             # Wait a moment for the scroll to complete and content to settle
             await asyncio.sleep(0.5)
-
-            screenshot_options = {"full_page": full_page, "type": "png"}
 
             if element_selector:
                 # Capture specific element
@@ -342,10 +388,13 @@ class GraphExplorerMCP:
                 await element.scroll_into_view_if_needed()
                 await asyncio.sleep(0.3)
 
+                # Element screenshots don't support full_page parameter
+                screenshot_options = {"type": "png"}
                 screenshot_data = await element.screenshot(**screenshot_options)
                 logger.info(f"✅ Screenshot taken of element: {element_selector}")
             else:
                 # Capture full page or viewport
+                screenshot_options = {"full_page": full_page, "type": "png"}
                 screenshot_data = await self.page.screenshot(**screenshot_options)
                 logger.info("✅ Screenshot taken of full page/viewport")
 
@@ -362,12 +411,15 @@ class GraphExplorerMCP:
 
                 logger.info(f"✅ Screenshot saved to: {save_path_obj.absolute()}")
 
-            # Return Image object that FastMCP can handle
-            return Image(data=screenshot_data, format="png")
+            # Return success message
+            size_info = f"({len(screenshot_data)} bytes)"
+            if save_path:
+                return f"✅ Screenshot captured and saved to {save_path} {size_info}"
+            else:
+                return f"✅ Screenshot captured successfully {size_info}"
 
         except Exception as e:
             logger.error(f"Screenshot error: {e}")
-            # Return a simple error image or re-raise
             raise Exception(f"Screenshot failed: {str(e)}")
 
     async def _navigate_to_graph_explorer_async(self) -> str:
@@ -834,6 +886,40 @@ class GraphExplorerMCP:
             logger.error(f"Get response body error: {e}")
             raise Exception(f"Failed to get response body: {str(e)}")
 
+    async def _get_response_status_async(self) -> str:
+        """Async response status retrieval implementation"""
+        await self.ensure_browser()
+
+        try:
+            logger.info("📊 Getting response status information...")
+
+            # Look for the MessageBar in the request-response-area
+            status_selector = "#request-response-area .fui-MessageBar"
+
+            # Wait for the status element to be available
+            status_element = await self.page.wait_for_selector(
+                status_selector, timeout=5000, state="visible"
+            )
+
+            if not status_element:
+                raise Exception("Status element not found")
+
+            # Get the text content from the status element
+            status_content = await status_element.text_content()
+
+            if not status_content:
+                raise Exception("Status element found but no content extracted")
+
+            # Clean up the status content
+            status_content = status_content.strip()
+
+            logger.info(f"✅ Successfully retrieved response status: {status_content}")
+            return status_content
+
+        except Exception as e:
+            logger.error(f"Get response status error: {e}")
+            raise Exception(f"Failed to get response status: {str(e)}")
+
     async def _run_query_async(self) -> str:
         """Async query execution implementation"""
         await self.ensure_browser()
@@ -908,6 +994,160 @@ class GraphExplorerMCP:
         except Exception as e:
             logger.error(f"Run query error: {e}")
             raise Exception(f"Failed to run query: {str(e)}")
+
+    async def _view_image_async(self, image_path: str) -> str:
+        """Async image viewing implementation"""
+        try:
+            # Validate that the image path is provided
+            if not image_path:
+                raise ValueError("Image path is required")
+
+            # Convert to Path object for modern path operations
+            image_path_obj = Path(image_path)
+
+            # Validate that the path is absolute
+            if not image_path_obj.is_absolute():
+                raise ValueError(f"Image path must be absolute, got: {image_path}")
+
+            # Check if file exists
+            if not image_path_obj.exists():
+                raise FileNotFoundError(f"Image file not found: {image_path}")
+
+            # Check if it's a file (not a directory)
+            if not image_path_obj.is_file():
+                raise ValueError(f"Path is not a file: {image_path}")
+
+            # Validate file extension (case-insensitive)
+            supported_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
+            file_extension = image_path_obj.suffix.lower()
+            
+            if file_extension not in supported_extensions:
+                raise ValueError(
+                    f"Unsupported image format: {file_extension}. "
+                    f"Supported formats: {', '.join(supported_extensions)}"
+                )
+
+            # Get file size for information
+            file_size = image_path_obj.stat().st_size
+            
+            # Format file size in human-readable format
+            if file_size < 1024:
+                size_str = f"{file_size} bytes"
+            elif file_size < 1024 * 1024:
+                size_str = f"{file_size / 1024:.1f} KB"
+            else:
+                size_str = f"{file_size / (1024 * 1024):.1f} MB"
+
+            # Create a data URL for the image
+            import base64
+            import mimetypes
+            
+            # Get MIME type
+            mime_type = mimetypes.guess_type(str(image_path_obj))[0]
+            if not mime_type:
+                # Fallback MIME types
+                mime_type_map = {
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.gif': 'image/gif',
+                    '.bmp': 'image/bmp',
+                    '.webp': 'image/webp'
+                }
+                mime_type = mime_type_map.get(file_extension, 'image/png')
+
+            # Read and encode the image
+            image_data = image_path_obj.read_bytes()
+            base64_data = base64.b64encode(image_data).decode('utf-8')
+            data_url = f"data:{mime_type};base64,{base64_data}"
+
+            # Create an HTML page to display the image
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Image Viewer - {image_path_obj.name}</title>
+                <style>
+                    body {{
+                        margin: 0;
+                        padding: 20px;
+                        font-family: Arial, sans-serif;
+                        background-color: #f0f0f0;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                    }}
+                    .info {{
+                        background: white;
+                        padding: 15px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        margin-bottom: 20px;
+                        max-width: 800px;
+                        width: 100%;
+                    }}
+                    .image-container {{
+                        background: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        max-width: 90vw;
+                        max-height: 80vh;
+                        overflow: auto;
+                    }}
+                    img {{
+                        max-width: 100%;
+                        height: auto;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                    }}
+                    .filename {{
+                        font-weight: bold;
+                        color: #333;
+                        margin-bottom: 10px;
+                    }}
+                    .details {{
+                        color: #666;
+                        font-size: 14px;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="info">
+                    <div class="filename">📷 {image_path_obj.name}</div>
+                    <div class="details">
+                        <strong>Path:</strong> {image_path}<br>
+                        <strong>Size:</strong> {size_str}<br>
+                        <strong>Format:</strong> {file_extension.upper()}<br>
+                        <strong>MIME Type:</strong> {mime_type}
+                    </div>
+                </div>
+                <div class="image-container">
+                    <img src="{data_url}" alt="{image_path_obj.name}" title="{image_path_obj.name}">
+                </div>
+            </body>
+            </html>
+            """
+
+            # Create a temporary HTML file to display the image
+            import tempfile
+            import os
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_file:
+                temp_file.write(html_content)
+                temp_html_path = temp_file.name
+
+            # Convert to file:// URL for the browser
+            file_url = f"file:///{temp_html_path.replace(os.sep, '/')}"
+
+            logger.info(f"✅ Image viewer created: {file_url}")
+            logger.info(f"📷 Image: {image_path_obj.name} ({size_str})")
+            
+            return f"✅ Image viewer created for {image_path_obj.name} ({size_str}). View at: {file_url}"
+
+        except Exception as e:
+            logger.error(f"View image error: {e}")
+            raise Exception(f"Failed to view image: {str(e)}")
 
     async def cleanup(self) -> None:
         """Clean up browser resources.
