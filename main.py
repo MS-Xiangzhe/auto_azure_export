@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ImageContent
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from pydantic import BaseModel, Field
 
@@ -301,14 +302,14 @@ class GraphExplorerMCP:
             return await self._get_response_status_async()
 
         @self.mcp.tool()
-        async def graph_explorer_view_image(image_path: str) -> str:
+        async def graph_explorer_view_image(image_path: str) -> ImageContent:
             """View an image from the specified file path.
 
             Args:
                 image_path: Absolute path to the image file to view
 
             Returns:
-                str: Success message with image information
+                ImageContent: Image binary data with metadata
 
             Supported formats:
                 - PNG (.png)
@@ -995,8 +996,8 @@ class GraphExplorerMCP:
             logger.error(f"Run query error: {e}")
             raise Exception(f"Failed to run query: {str(e)}")
 
-    async def _view_image_async(self, image_path: str) -> str:
-        """Async image viewing implementation"""
+    async def _view_image_async(self, image_path: str) -> ImageContent:
+        """Async image viewing implementation that returns binary image data"""
         try:
             # Validate that the image path is provided
             if not image_path:
@@ -1038,11 +1039,8 @@ class GraphExplorerMCP:
             else:
                 size_str = f"{file_size / (1024 * 1024):.1f} MB"
 
-            # Create a data URL for the image
-            import base64
-            import mimetypes
-            
             # Get MIME type
+            import mimetypes
             mime_type = mimetypes.guess_type(str(image_path_obj))[0]
             if not mime_type:
                 # Fallback MIME types
@@ -1056,94 +1054,18 @@ class GraphExplorerMCP:
                 }
                 mime_type = mime_type_map.get(file_extension, 'image/png')
 
-            # Read and encode the image
+            # Read image binary data
             image_data = image_path_obj.read_bytes()
-            base64_data = base64.b64encode(image_data).decode('utf-8')
-            data_url = f"data:{mime_type};base64,{base64_data}"
 
-            # Create an HTML page to display the image
-            html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Image Viewer - {image_path_obj.name}</title>
-                <style>
-                    body {{
-                        margin: 0;
-                        padding: 20px;
-                        font-family: Arial, sans-serif;
-                        background-color: #f0f0f0;
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                    }}
-                    .info {{
-                        background: white;
-                        padding: 15px;
-                        border-radius: 8px;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                        margin-bottom: 20px;
-                        max-width: 800px;
-                        width: 100%;
-                    }}
-                    .image-container {{
-                        background: white;
-                        padding: 20px;
-                        border-radius: 8px;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                        max-width: 90vw;
-                        max-height: 80vh;
-                        overflow: auto;
-                    }}
-                    img {{
-                        max-width: 100%;
-                        height: auto;
-                        border: 1px solid #ddd;
-                        border-radius: 4px;
-                    }}
-                    .filename {{
-                        font-weight: bold;
-                        color: #333;
-                        margin-bottom: 10px;
-                    }}
-                    .details {{
-                        color: #666;
-                        font-size: 14px;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="info">
-                    <div class="filename">📷 {image_path_obj.name}</div>
-                    <div class="details">
-                        <strong>Path:</strong> {image_path}<br>
-                        <strong>Size:</strong> {size_str}<br>
-                        <strong>Format:</strong> {file_extension.upper()}<br>
-                        <strong>MIME Type:</strong> {mime_type}
-                    </div>
-                </div>
-                <div class="image-container">
-                    <img src="{data_url}" alt="{image_path_obj.name}" title="{image_path_obj.name}">
-                </div>
-            </body>
-            </html>
-            """
+            logger.info(f"✅ Successfully loaded image: {image_path_obj.name} ({size_str})")
+            logger.info(f"📷 MIME type: {mime_type}")
 
-            # Create a temporary HTML file to display the image
-            import tempfile
-            import os
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_file:
-                temp_file.write(html_content)
-                temp_html_path = temp_file.name
-
-            # Convert to file:// URL for the browser
-            file_url = f"file:///{temp_html_path.replace(os.sep, '/')}"
-
-            logger.info(f"✅ Image viewer created: {file_url}")
-            logger.info(f"📷 Image: {image_path_obj.name} ({size_str})")
-            
-            return f"✅ Image viewer created for {image_path_obj.name} ({size_str}). View at: {file_url}"
+            # Return ImageContent object with binary data
+            return ImageContent(
+                type="image",
+                data=image_data,
+                mimeType=mime_type
+            )
 
         except Exception as e:
             logger.error(f"View image error: {e}")
