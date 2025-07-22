@@ -160,6 +160,14 @@ class GraphExplorerMCP:
 
             Returns:
                 str: Success message with current page URL
+
+            Note: This will clear ALL state including headers, URL, method, and body.
+            Use this when you want to start completely fresh.
+
+            Recommended workflow:
+                1. Call this function to navigate/refresh (optional, for clean slate)
+                2. Set URL, method, headers, and body
+                3. Run the query
             """
             return await self._navigate_to_graph_explorer_async()
 
@@ -325,6 +333,49 @@ class GraphExplorerMCP:
             Note: image_path must be an absolute path to an existing image file.
             """
             return await self._view_image_async(image_path)
+
+        @self.mcp.tool()
+        async def graph_explorer_set_request_headers(headers: dict) -> str:
+            """Set request headers in Graph Explorer.
+
+            Args:
+                headers: Dictionary of header key-value pairs to set
+
+            Returns:
+                str: Success message with confirmation of headers being set
+
+            Examples:
+                - Set authorization header: graph_explorer_set_request_headers({
+                    "Authorization": "Bearer token123",
+                    "Content-Type": "application/json"
+                  })
+                - Set custom headers: graph_explorer_set_request_headers({
+                    "X-Custom-Header": "custom-value",
+                    "Accept": "application/json"
+                  })
+
+            Important Notes:
+                - This function REPLACES all existing headers with the provided ones
+                - Existing headers are automatically cleared before adding new ones
+                - Each call completely replaces the header list with your new headers
+
+            Workflow:
+                1. This function automatically clears all existing headers first
+                2. Then adds your specified headers one by one
+                3. Set other request parameters (URL, method, body) as needed
+                4. Finally run the query
+            """
+            # Simple validation without Pydantic
+            if not isinstance(headers, dict):
+                raise ValueError("Headers must be a dictionary of key-value pairs")
+            
+            for key, value in headers.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError(f"Header key must be a non-empty string, got: {key}")
+                if not isinstance(value, str):
+                    raise ValueError(f"Header value must be a string, got: {value} for key {key}")
+            
+            return await self._set_request_headers_async(headers)
 
         @self.mcp.tool()
         async def graph_explorer_run_query() -> str:
@@ -920,6 +971,207 @@ class GraphExplorerMCP:
         except Exception as e:
             logger.error(f"Get response status error: {e}")
             raise Exception(f"Failed to get response status: {str(e)}")
+
+    async def _set_request_headers_async(self, headers: dict) -> str:
+        """Async request headers setting implementation - ADDITIVE only"""
+        await self.ensure_browser()
+
+        try:
+            logger.info(f"🔧 Adding request headers: {headers}")
+
+            # First, click on the Request Headers tab
+            tab_selector = 'button[role="tab"][value="request-headers"]'
+            tab_button = await self.page.wait_for_selector(tab_selector, timeout=10000)
+            if not tab_button:
+                raise Exception("Request Headers tab not found")
+
+            # Click the Request Headers tab
+            await tab_button.click()
+            await asyncio.sleep(1)
+
+            # Clear all existing headers first
+            await self._clear_all_headers()
+
+            # Add each header from the dictionary
+            headers_added = 0
+            for key, value in headers.items():
+                try:
+                    await self._add_single_header(key, value)
+                    headers_added += 1
+                    logger.info(f"✅ Added header: {key} = {value}")
+                    await asyncio.sleep(0.5)  # Small delay between adding headers
+                except Exception as header_error:
+                    logger.warning(f"⚠️ Failed to add header {key}: {header_error}")
+                    continue
+
+            if headers_added == 0:
+                raise Exception("Failed to add any headers")
+
+            logger.info(f"✅ Successfully set {headers_added} request headers")
+            return f"Successfully set {headers_added} request headers (replaced existing headers)"
+
+        except Exception as e:
+            logger.error(f"Set request headers error: {e}")
+            raise Exception(f"Failed to set request headers: {str(e)}")
+
+    async def _clear_all_headers(self):
+        """Clear all existing headers by clicking remove buttons"""
+        try:
+            logger.info("🧹 Clearing all existing headers...")
+            
+            # Find all remove header buttons
+            remove_buttons_selector = 'button[aria-label="Remove request header"]'
+            
+            # Get all remove buttons
+            remove_buttons = await self.page.query_selector_all(remove_buttons_selector)
+            
+            if not remove_buttons:
+                logger.info("ℹ️ No existing headers to remove")
+                return
+            
+            logger.info(f"🔍 Found {len(remove_buttons)} headers to remove")
+            
+            # Click each remove button
+            for i, button in enumerate(remove_buttons):
+                try:
+                    await button.click()
+                    logger.info(f"✅ Removed header {i+1}/{len(remove_buttons)}")
+                    await asyncio.sleep(0.3)  # Small delay between clicks
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to remove header {i+1}: {e}")
+                    continue
+            
+            # Wait a bit for UI to update
+            await asyncio.sleep(0.5)
+            logger.info("✅ Successfully cleared all existing headers")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not clear existing headers: {e}")
+            # Continue anyway, as this is not critical
+
+    async def _add_single_header(self, key: str, value: str):
+        """Add a single header key-value pair"""
+        try:
+            # Find the header input container
+            container_selector = 'div:has(input[placeholder="Key"]):has(input[placeholder="Value"]):has(button:has-text("Add"))'
+            
+            try:
+                container = await self.page.wait_for_selector(container_selector, timeout=3000)
+                if container:
+                    logger.info(f"✅ Found header container with selector: {container_selector}")
+            except:
+                container = None
+
+            if not container:
+                raise Exception("Header input container not found")
+
+            # Find inputs with multiple selector strategies
+            key_input_selectors = [
+                'input[placeholder="Key"][name="name"]',
+                'input[placeholder="Key"]',
+                'span.fui-Input input[placeholder="Key"]',
+            ]
+            
+            value_input_selectors = [
+                'input[placeholder="Value"][name="value"]', 
+                'input[placeholder="Value"]',
+                'span.fui-Input input[placeholder="Value"]',
+            ]
+
+            add_button_selectors = [
+                'button:has-text("Add")',
+                'button[type="button"]:has-text("Add")',
+                'button.fui-Button:has-text("Add")',
+            ]
+
+            # Find key input
+            key_input = None
+            for selector in key_input_selectors:
+                try:
+                    key_input = await container.query_selector(selector)
+                    if key_input:
+                        logger.info(f"✅ Found key input with selector: {selector}")
+                        break
+                except:
+                    continue
+
+            if not key_input:
+                raise Exception("Key input field not found")
+
+            # Find value input
+            value_input = None
+            for selector in value_input_selectors:
+                try:
+                    value_input = await container.query_selector(selector)
+                    if value_input:
+                        logger.info(f"✅ Found value input with selector: {selector}")
+                        break
+                except:
+                    continue
+
+            if not value_input:
+                raise Exception("Value input field not found")
+
+            # Find add button
+            add_button = None
+            for selector in add_button_selectors:
+                try:
+                    add_button = await container.query_selector(selector)
+                    if add_button:
+                        logger.info(f"✅ Found add button with selector: {selector}")
+                        break
+                except:
+                    continue
+
+            if not add_button:
+                raise Exception("Add button not found")
+
+            # Clear and set the key
+            await key_input.focus()
+            await asyncio.sleep(0.2)
+            await key_input.fill("")  # Clear existing content
+            await key_input.type(key, delay=50)  # Add small delay between keystrokes
+            await asyncio.sleep(0.3)
+
+            # Clear and set the value
+            await value_input.focus()
+            await asyncio.sleep(0.2)
+            await value_input.fill("")  # Clear existing content
+            await value_input.type(value, delay=50)  # Add small delay between keystrokes
+            await asyncio.sleep(0.3)
+
+            # Trigger input events to ensure UI updates
+            await key_input.dispatch_event('input')
+            await value_input.dispatch_event('input')
+            await asyncio.sleep(0.2)
+
+            # Check if Add button is enabled
+            is_disabled = await add_button.is_disabled()
+            if is_disabled:
+                # Try to enable it by ensuring both inputs have values and are focused
+                await key_input.focus()
+                await key_input.dispatch_event('blur')
+                await value_input.focus()
+                await value_input.dispatch_event('blur')
+                await asyncio.sleep(0.3)
+                
+                # Check again
+                is_disabled = await add_button.is_disabled()
+                if is_disabled:
+                    logger.warning(f"⚠️ Add button is disabled for {key}={value}, attempting to click anyway")
+
+            # Click the Add button (even if disabled, sometimes it still works)
+            try:
+                await add_button.click(force=True)
+                await asyncio.sleep(0.5)
+                logger.info(f"✅ Successfully added header: {key} = {value}")
+            except Exception as click_error:
+                logger.error(f"❌ Failed to click Add button: {click_error}")
+                raise
+
+        except Exception as e:
+            logger.error(f"❌ Failed to add header {key}={value}: {e}")
+            raise Exception(f"Failed to add header {key}: {str(e)}")
 
     async def _run_query_async(self) -> str:
         """Async query execution implementation"""
