@@ -34,11 +34,9 @@ class ScreenshotOptions(BaseModel):
         default=None,
         description="CSS selector for specific element to capture (e.g., '.main-content', '#response-area')",
     )
-    save_path: Optional[str] = Field(
-        default=None,
+    save_path: str = Field(
         description="Absolute file path to save the screenshot (e.g., 'C:\\screenshots\\page.png', '/home/user/screenshots/page.png')",
     )
-
 
 
 class ApiRequestConfig(BaseModel):
@@ -108,25 +106,24 @@ class GraphExplorerMCP:
 
         @self.mcp.tool()
         async def graph_explorer_screenshot(
+            save_path: str,
             full_page: bool = False,
             element_selector: Optional[str] = None,
-            save_path: Optional[str] = None,
         ) -> str:
             """Take screenshot of Microsoft Graph Explorer current page.
 
             Args:
+                save_path: Absolute file path to save the screenshot (REQUIRED)
                 full_page: Whether to capture full page (default: False)
                 element_selector: Optional CSS selector for specific element to capture
-                save_path: Optional absolute file path to save the screenshot
 
             Returns:
                 str: Success message with screenshot information
 
             Examples:
-                - Basic screenshot: graph_explorer_screenshot()
-                - Full page screenshot: graph_explorer_screenshot(full_page=True)
-                - Element screenshot: graph_explorer_screenshot(element_selector="#response-area")
-                - Save to file: graph_explorer_screenshot(save_path="C:\\screenshots\\graph.png")
+                - Basic screenshot: graph_explorer_screenshot("C:\\screenshots\\graph.png")
+                - Full page screenshot: graph_explorer_screenshot("C:\\screenshots\\full-page.png", full_page=True)
+                - Element screenshot: graph_explorer_screenshot("C:\\screenshots\\element.png", element_selector="#response-area")
 
             Note: save_path must be an absolute path, not relative.
             """
@@ -137,13 +134,12 @@ class GraphExplorerMCP:
                 save_path=save_path,
             )
 
-            # Validate that save_path is absolute if provided
-            if save_path:
-                path_obj = Path(save_path)
-                if not path_obj.is_absolute():
-                    raise ValueError(
-                        f"save_path must be an absolute path, got: {save_path}"
-                    )
+            # Validate that save_path is absolute (now required)
+            path_obj = Path(save_path)
+            if not path_obj.is_absolute():
+                raise ValueError(
+                    f"save_path must be an absolute path, got: {save_path}"
+                )
 
             return await self._take_screenshot_async(
                 options.full_page,
@@ -368,13 +364,17 @@ class GraphExplorerMCP:
             # Simple validation without Pydantic
             if not isinstance(headers, dict):
                 raise ValueError("Headers must be a dictionary of key-value pairs")
-            
+
             for key, value in headers.items():
                 if not isinstance(key, str) or not key.strip():
-                    raise ValueError(f"Header key must be a non-empty string, got: {key}")
+                    raise ValueError(
+                        f"Header key must be a non-empty string, got: {key}"
+                    )
                 if not isinstance(value, str):
-                    raise ValueError(f"Header value must be a string, got: {value} for key {key}")
-            
+                    raise ValueError(
+                        f"Header value must be a string, got: {value} for key {key}"
+                    )
+
             return await self._set_request_headers_async(headers)
 
         @self.mcp.tool()
@@ -415,7 +415,7 @@ class GraphExplorerMCP:
         self,
         full_page: bool,
         element_selector: Optional[str],
-        save_path: Optional[str],
+        save_path: str,
     ) -> str:
         """Async screenshot implementation with auto-scroll to top"""
         await self.ensure_browser()
@@ -450,25 +450,21 @@ class GraphExplorerMCP:
                 screenshot_data = await self.page.screenshot(**screenshot_options)
                 logger.info("✅ Screenshot taken of full page/viewport")
 
-            # Save to file if path is provided
-            if save_path:
-                # Convert to Path object for modern path operations
-                save_path_obj = Path(save_path)
+            # Save to file (now required)
+            # Convert to Path object for modern path operations
+            save_path_obj = Path(save_path)
 
-                # Create parent directories if they don't exist
-                save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            # Create parent directories if they don't exist
+            save_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-                # Save the screenshot to the specified path
-                save_path_obj.write_bytes(screenshot_data)
+            # Save the screenshot to the specified path
+            save_path_obj.write_bytes(screenshot_data)
 
-                logger.info(f"✅ Screenshot saved to: {save_path_obj.absolute()}")
+            logger.info(f"✅ Screenshot saved to: {save_path_obj.absolute()}")
 
             # Return success message
             size_info = f"({len(screenshot_data)} bytes)"
-            if save_path:
-                return f"✅ Screenshot captured and saved to {save_path} {size_info}"
-            else:
-                return f"✅ Screenshot captured successfully {size_info}"
+            return f"✅ Screenshot captured and saved to {save_path} {size_info}"
 
         except Exception as e:
             logger.error(f"Screenshot error: {e}")
@@ -715,28 +711,12 @@ class GraphExplorerMCP:
             if not request_area:
                 raise Exception("Request area not found")
 
-            # Find the Monaco editor specifically in the request area
-            # Use more specific selectors targeting the request area
-            editor_selectors = [
-                "#request-area #monaco-editor textarea.inputarea",
-                '#request-area #monaco-editor textarea[aria-label="Editor content"]',
-                "#request-area .monaco-editor textarea.inputarea",
-                "#request-area textarea.inputarea",
-                # Fallback: target the first Monaco editor (should be in request area)
-                'div[data-keybinding-context="1"] textarea.inputarea',
-            ]
+            # Find the Monaco editor in the request area using simplified selector
+            editor_selector = "#request-area #monaco-editor textarea.inputarea"
 
-            editor_element = None
-            for selector in editor_selectors:
-                try:
-                    editor_element = await self.page.wait_for_selector(
-                        selector, timeout=3000, state="visible"
-                    )
-                    if editor_element:
-                        logger.info(f"✅ Found Monaco editor with selector: {selector}")
-                        break
-                except:
-                    continue
+            editor_element = await self.page.wait_for_selector(
+                editor_selector, timeout=10000, state="visible"
+            )
 
             if not editor_element:
                 raise Exception("Monaco editor not found in request area")
@@ -753,11 +733,36 @@ class GraphExplorerMCP:
                     (bodyContent) => {
                         const editors = window.monaco?.editor?.getEditors();
                         if (editors && editors.length > 0) {
-                            // Find the request editor (first one or by context)
-                            const requestEditor = editors[0];
+                            console.log('Found', editors.length, 'Monaco editors');
+                            
+                            // Find the request body editor specifically
+                            // Look for editor that is in the request area (not URL area)
+                            let requestEditor = null;
+                            
+                            for (let i = 0; i < editors.length; i++) {
+                                const editor = editors[i];
+                                const editorElement = editor.getDomNode();
+                                
+                                // Check if this editor is inside the request area
+                                const requestArea = document.querySelector('#request-area');
+                                if (requestArea && requestArea.contains(editorElement)) {
+                                    console.log('Found request body editor at index', i);
+                                    requestEditor = editor;
+                                    break;
+                                }
+                            }
+                            
+                            // Fallback: if we can't find by DOM location, use the last editor
+                            // (usually URL is first, request body is second)
+                            if (!requestEditor && editors.length > 1) {
+                                console.log('Using fallback: last editor for request body');
+                                requestEditor = editors[editors.length - 1];
+                            }
+                            
                             if (requestEditor) {
                                 // Set content directly, bypassing autocomplete
                                 requestEditor.setValue(bodyContent);
+                                console.log('Successfully set content via Monaco API');
                                 return true;
                             }
                         }
@@ -1018,19 +1023,19 @@ class GraphExplorerMCP:
         """Clear all existing headers by clicking remove buttons"""
         try:
             logger.info("🧹 Clearing all existing headers...")
-            
+
             # Find all remove header buttons
             remove_buttons_selector = 'button[aria-label="Remove request header"]'
-            
+
             # Get all remove buttons
             remove_buttons = await self.page.query_selector_all(remove_buttons_selector)
-            
+
             if not remove_buttons:
                 logger.info("ℹ️ No existing headers to remove")
                 return
-            
+
             logger.info(f"🔍 Found {len(remove_buttons)} headers to remove")
-            
+
             # Click each remove button
             for i, button in enumerate(remove_buttons):
                 try:
@@ -1040,11 +1045,11 @@ class GraphExplorerMCP:
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to remove header {i+1}: {e}")
                     continue
-            
+
             # Wait a bit for UI to update
             await asyncio.sleep(0.5)
             logger.info("✅ Successfully cleared all existing headers")
-            
+
         except Exception as e:
             logger.warning(f"⚠️ Could not clear existing headers: {e}")
             # Continue anyway, as this is not critical
@@ -1054,11 +1059,15 @@ class GraphExplorerMCP:
         try:
             # Find the header input container
             container_selector = 'div:has(input[placeholder="Key"]):has(input[placeholder="Value"]):has(button:has-text("Add"))'
-            
+
             try:
-                container = await self.page.wait_for_selector(container_selector, timeout=3000)
+                container = await self.page.wait_for_selector(
+                    container_selector, timeout=3000
+                )
                 if container:
-                    logger.info(f"✅ Found header container with selector: {container_selector}")
+                    logger.info(
+                        f"✅ Found header container with selector: {container_selector}"
+                    )
             except:
                 container = None
 
@@ -1071,9 +1080,9 @@ class GraphExplorerMCP:
                 'input[placeholder="Key"]',
                 'span.fui-Input input[placeholder="Key"]',
             ]
-            
+
             value_input_selectors = [
-                'input[placeholder="Value"][name="value"]', 
+                'input[placeholder="Value"][name="value"]',
                 'input[placeholder="Value"]',
                 'span.fui-Input input[placeholder="Value"]',
             ]
@@ -1137,12 +1146,14 @@ class GraphExplorerMCP:
             await value_input.focus()
             await asyncio.sleep(0.2)
             await value_input.fill("")  # Clear existing content
-            await value_input.type(value, delay=50)  # Add small delay between keystrokes
+            await value_input.type(
+                value, delay=50
+            )  # Add small delay between keystrokes
             await asyncio.sleep(0.3)
 
             # Trigger input events to ensure UI updates
-            await key_input.dispatch_event('input')
-            await value_input.dispatch_event('input')
+            await key_input.dispatch_event("input")
+            await value_input.dispatch_event("input")
             await asyncio.sleep(0.2)
 
             # Check if Add button is enabled
@@ -1150,15 +1161,17 @@ class GraphExplorerMCP:
             if is_disabled:
                 # Try to enable it by ensuring both inputs have values and are focused
                 await key_input.focus()
-                await key_input.dispatch_event('blur')
+                await key_input.dispatch_event("blur")
                 await value_input.focus()
-                await value_input.dispatch_event('blur')
+                await value_input.dispatch_event("blur")
                 await asyncio.sleep(0.3)
-                
+
                 # Check again
                 is_disabled = await add_button.is_disabled()
                 if is_disabled:
-                    logger.warning(f"⚠️ Add button is disabled for {key}={value}, attempting to click anyway")
+                    logger.warning(
+                        f"⚠️ Add button is disabled for {key}={value}, attempting to click anyway"
+                    )
 
             # Click the Add button (even if disabled, sometimes it still works)
             try:
@@ -1271,9 +1284,9 @@ class GraphExplorerMCP:
                 raise ValueError(f"Path is not a file: {image_path}")
 
             # Validate file extension (case-insensitive)
-            supported_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
+            supported_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
             file_extension = image_path_obj.suffix.lower()
-            
+
             if file_extension not in supported_extensions:
                 raise ValueError(
                     f"Unsupported image format: {file_extension}. "
@@ -1282,7 +1295,7 @@ class GraphExplorerMCP:
 
             # Get file size for information
             file_size = image_path_obj.stat().st_size
-            
+
             # Format file size in human-readable format
             if file_size < 1024:
                 size_str = f"{file_size} bytes"
@@ -1293,31 +1306,30 @@ class GraphExplorerMCP:
 
             # Get MIME type
             import mimetypes
+
             mime_type = mimetypes.guess_type(str(image_path_obj))[0]
             if not mime_type:
                 # Fallback MIME types
                 mime_type_map = {
-                    '.png': 'image/png',
-                    '.jpg': 'image/jpeg',
-                    '.jpeg': 'image/jpeg',
-                    '.gif': 'image/gif',
-                    '.bmp': 'image/bmp',
-                    '.webp': 'image/webp'
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
+                    ".bmp": "image/bmp",
+                    ".webp": "image/webp",
                 }
-                mime_type = mime_type_map.get(file_extension, 'image/png')
+                mime_type = mime_type_map.get(file_extension, "image/png")
 
             # Read image binary data
             image_data = image_path_obj.read_bytes()
 
-            logger.info(f"✅ Successfully loaded image: {image_path_obj.name} ({size_str})")
+            logger.info(
+                f"✅ Successfully loaded image: {image_path_obj.name} ({size_str})"
+            )
             logger.info(f"📷 MIME type: {mime_type}")
 
             # Return ImageContent object with binary data
-            return ImageContent(
-                type="image",
-                data=image_data,
-                mimeType=mime_type
-            )
+            return ImageContent(type="image", data=image_data, mimeType=mime_type)
 
         except Exception as e:
             logger.error(f"View image error: {e}")
