@@ -5,7 +5,9 @@ Playwright automation for Microsoft Graph Explorer with MCP streaming transport
 """
 
 import asyncio
+import base64
 import logging
+import mimetypes
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1305,8 +1307,6 @@ class GraphExplorerMCP:
                 size_str = f"{file_size / (1024 * 1024):.1f} MB"
 
             # Get MIME type
-            import mimetypes
-
             mime_type = mimetypes.guess_type(str(image_path_obj))[0]
             if not mime_type:
                 # Fallback MIME types
@@ -1323,13 +1323,16 @@ class GraphExplorerMCP:
             # Read image binary data
             image_data = image_path_obj.read_bytes()
 
+            # Encode binary data to base64 string for ImageContent
+            image_data_base64 = base64.b64encode(image_data).decode('utf-8')
+
             logger.info(
                 f"✅ Successfully loaded image: {image_path_obj.name} ({size_str})"
             )
             logger.info(f"📷 MIME type: {mime_type}")
 
-            # Return ImageContent object with binary data
-            return ImageContent(type="image", data=image_data, mimeType=mime_type)
+            # Return ImageContent object with base64-encoded data
+            return ImageContent(type="image", data=image_data_base64, mimeType=mime_type)
 
         except Exception as e:
             logger.error(f"View image error: {e}")
