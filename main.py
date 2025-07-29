@@ -900,38 +900,82 @@ class GraphExplorerMCP:
             if not editor_element:
                 raise Exception("Monaco editor not found in response area")
 
-            # Get the content from the editor
-            # Focus the textarea first
-            await editor_element.focus()
-            await asyncio.sleep(0.5)
-
-            # Select all content and copy it
-            await self.page.keyboard.press("Control+a")
-            await asyncio.sleep(0.5)
-
-            # Get the selected text content
-            content = await self.page.evaluate("() => window.getSelection().toString()")
-
-            # If that doesn't work, try getting the value directly from the textarea
-            if not content:
-                content = await editor_element.input_value()
-
-            # If still no content, try getting from the editor's model
-            if not content:
-                # Try to get content from Monaco editor's model via JavaScript
-                content = await self.page.evaluate(
-                    """
-                    () => {
-                        const editors = window.monaco?.editor?.getEditors();
-                        if (editors && editors.length > 1) {
-                            // Get the second editor (response area)
-                            const responseEditor = editors[1];
-                            return responseEditor.getValue();
-                        }
-                        return null;
-                    }
+            # Get the content from Monaco editor's model directly (this bypasses display truncation)
+            # Try to get complete content from Monaco editor's model via JavaScript first
+            content = await self.page.evaluate(
                 """
+                () => {
+                    const editors = window.monaco?.editor?.getEditors();
+                    if (editors && editors.length > 0) {
+                        console.log('Found', editors.length, 'Monaco editors');
+                        
+                        // Find the response editor specifically
+                        // Look for editor that is in the response area (not request area)
+                        let responseEditor = null;
+                        
+                        for (let i = 0; i < editors.length; i++) {
+                            const editor = editors[i];
+                            const editorElement = editor.getDomNode();
+                            
+                            // Check if this editor is inside the response area
+                            const responseArea = document.querySelector('#response-area');
+                            if (responseArea && responseArea.contains(editorElement)) {
+                                console.log('Found response editor at index', i);
+                                responseEditor = editor;
+                                break;
+                            }
+                        }
+                        
+                        // DO NOT USE FALLBACK - we only want the response editor, not request body editor
+                        if (responseEditor) {
+                            // Get complete content from editor model (bypasses display truncation)
+                            const fullContent = responseEditor.getValue();
+                            console.log('Successfully retrieved full content via Monaco API, length:', fullContent.length);
+                            return fullContent;
+                        } else {
+                            console.log('No response editor found in response area');
+                            return null;
+                        }
+                    }
+                    return null;
+                }
+                """
+            )
+
+            # Fallback methods if Monaco API doesn't work
+            if not content:
+                logger.info("⚠️ Monaco API not available, trying alternative methods")
+                
+                # Only try fallback methods if we can confirm we're working with response area editor
+                # Focus the textarea first
+                await editor_element.focus()
+                await asyncio.sleep(0.5)
+
+                # Verify we're still in the response area before trying to get content
+                is_in_response_area = await self.page.evaluate(
+                    """
+                    (element) => {
+                        const responseArea = document.querySelector('#response-area');
+                        return responseArea && responseArea.contains(element);
+                    }
+                    """,
+                    editor_element
                 )
+                
+                if is_in_response_area:
+                    # Select all content and copy it
+                    await self.page.keyboard.press("Control+a")
+                    await asyncio.sleep(0.5)
+
+                    # Get the selected text content
+                    content = await self.page.evaluate("() => window.getSelection().toString()")
+
+                    # If that doesn't work, try getting the value directly from the textarea
+                    if not content:
+                        content = await editor_element.input_value()
+                else:
+                    logger.warning("⚠️ Editor element not in response area, skipping fallback methods")
+                    content = "Error: Could not locate response editor in response area"
 
             if not content:
                 content = "No content found in response area"
